@@ -36,8 +36,11 @@ var initCmd = &cobra.Command{
 	Long: `Initialize bd in the current directory by creating a .beads/ directory
 and Dolt database. Optionally specify a custom issue prefix.
 
-Dolt is the default (and only supported) storage backend. The legacy SQLite
-backend has been removed. Use --backend=sqlite to see migration instructions.
+Dolt is the default storage backend. Pass --backend=mysql to use the
+plain InnoDB backend instead (no version control, no push/pull, no
+history; closed beads auto-export to .beads/closed/<YYYY-MM>.jsonl).
+The legacy SQLite backend has been removed. Use --backend=sqlite to
+see migration instructions.
 
 Use --database to specify an existing server database name, overriding the
 default prefix-based naming. This is useful when an external tool (e.g. an orchestrator)
@@ -151,20 +154,27 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 
-		// Handle --backend flag: "dolt" is the only supported backend.
-		// "sqlite" is accepted for backward compatibility but prints a
-		// deprecation notice and exits with an error.
+		// Handle --backend flag: "dolt" is the default; "mysql" selects the
+		// plain InnoDB backend (see internal/storage/mysql/). "sqlite" is
+		// accepted for backward compatibility but prints a deprecation
+		// notice and exits with an error.
 		if backendFlag == "sqlite" {
 			fmt.Fprintf(os.Stderr, "%s The SQLite backend has been removed.\n\n", ui.RenderWarn("⚠ DEPRECATED:"))
-			fmt.Fprintf(os.Stderr, "Dolt is now the default (and only) storage backend for beads.\n")
+			fmt.Fprintf(os.Stderr, "Dolt is now the default storage backend for beads.\n")
 			fmt.Fprintf(os.Stderr, "To initialize with Dolt:\n")
 			fmt.Fprintf(os.Stderr, "  bd init\n\n")
 			fmt.Fprintf(os.Stderr, "To import issues from an existing JSONL export:\n")
 			fmt.Fprintf(os.Stderr, "  bd init --from-jsonl\n\n")
 			fmt.Fprintf(os.Stderr, "See: https://github.com/steveyegge/beads/blob/main/docs/DOLT-BACKEND.md\n")
 			os.Exit(1)
+		} else if backendFlag == configfile.BackendMySQL {
+			// MySQL init takes a fully separate path: no Dolt server, no
+			// federation plumbing, just connect to MySQL, run migrations,
+			// and write metadata.json.
+			runMySQLInit(rootCtx, prefix, database, serverHost, serverPort, serverUser, quiet)
+			return
 		} else if backendFlag != "" && backendFlag != "dolt" {
-			FatalError("unknown backend %q: only \"dolt\" is supported", backendFlag)
+			FatalError("unknown backend %q: supported backends are \"dolt\" and \"mysql\"", backendFlag)
 		}
 
 		// Validate --database format early, before any side effects.
@@ -1561,7 +1571,7 @@ func init() {
 	initCmd.Flags().String("role", "", "Set beads role without prompting: \"maintainer\" or \"contributor\"")
 
 	// Backend selection (dolt is the only supported backend; sqlite accepted for deprecation notice)
-	initCmd.Flags().String("backend", "", "Storage backend (default: dolt). --backend=sqlite prints deprecation notice.")
+	initCmd.Flags().String("backend", "", "Storage backend: \"dolt\" (default) or \"mysql\". --backend=sqlite prints deprecation notice.")
 
 	// Dolt server connection flags
 	initCmd.Flags().Bool("server", false, "Use external dolt sql-server instead of embedded engine")
