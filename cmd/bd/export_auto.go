@@ -15,9 +15,11 @@ import (
 	"github.com/steveyegge/beads/internal/atomicfile"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/mysql"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -46,6 +48,14 @@ func maybeAutoExport(ctx context.Context, serverMode, allowEmptyOverwrite bool) 
 		return nil
 	}
 
+	// Piggyback the closed-bead TTL sweep here. The sweep is a no-op on
+	// dolt and throttled on mysql, so this is cheap on every invocation.
+	if store != nil {
+		if mysqlStore, ok := storage.UnwrapStore(store).(*mysql.MySQLStore); ok {
+			mysqlStore.MaybeSweepExpiredClosed(ctx)
+		}
+	}
+
 	if !config.GetBool("export.auto") {
 		return nil
 	}
@@ -61,8 +71,18 @@ func maybeAutoExport(ctx context.Context, serverMode, allowEmptyOverwrite bool) 
 		return nil
 	}
 
-	// Resolve the export path before throttle/check detection so all decisions
-	// refer to the path that would actually be written.
+	// MySQL backend: skip auto-export entirely. The dolt-commit-hash change
+	// detection has no analog on plain InnoDB, and closed beads already
+	// stream out via the closed-export JSONL pipeline (see
+	// internal/storage/mysql/closed_export.go). Re-introducing a periodic
+	// dump of the issues table would be a separate feature.
+	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil &&
+		cfg.GetBackend() == configfile.BackendMySQL {
+		return nil
+	}
+
+	// Resolve the export path before applying it so all decisions refer to
+	// the path that would actually be written.
 	exportPath := config.GetString("export.path")
 	if exportPath == "" {
 		if globalFlag {

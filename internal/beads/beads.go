@@ -428,6 +428,13 @@ func findLocalBeadsDir() string {
 func findDatabaseInBeadsDir(beadsDir string, _ bool) string {
 	// Check for metadata.json first (single source of truth)
 	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
+		// MySQL backend: the "database" is a connection string, not an
+		// on-disk path. Returning beadsDir signals "yes, a database is
+		// configured here" without pointing at a directory that doesn't
+		// exist. Downstream callers (cmd/bd) check the backend explicitly.
+		if cfg.GetBackend() == configfile.BackendMySQL {
+			return beadsDir
+		}
 		// For Dolt server mode, database is on the server - no local directory required
 		if cfg.IsDoltServerMode() {
 			return cfg.DatabasePath(beadsDir)
@@ -636,6 +643,19 @@ func hasBeadsDatabase(beadsDir string) bool {
 	for _, match := range dbMatches {
 		baseName := filepath.Base(match)
 		if !strings.Contains(baseName, ".backup") && baseName != "vc.db" {
+			return true
+		}
+	}
+	// MySQL backend stores no on-disk database under .beads/; the connection
+	// is configured in metadata.json. Treat metadata.json with backend=mysql
+	// as a valid database marker so commands route through the mysql factory
+	// branch instead of erroring with "no beads database found".
+	if data, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json")); err == nil {
+		// Cheap substring check rather than a full JSON parse — we just need
+		// a yes/no on backend=mysql. The configfile loader does the strict
+		// parse later in the command path.
+		if strings.Contains(string(data), `"backend":"mysql"`) ||
+			strings.Contains(string(data), `"backend": "mysql"`) {
 			return true
 		}
 	}
