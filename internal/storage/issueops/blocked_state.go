@@ -8,17 +8,21 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+// MySQL 8.0+ rejects `UPDATE <T> ... EXISTS (SELECT FROM <T> ...)` with
+// Error 1093 even when aliased differently. Each JOIN against an outer
+// UPDATE target's own table (issues/wisps) is wrapped in a derived table
+// so MySQL treats it as an independent rowset. Dolt accepts both forms.
 const waitsForGateBlockedSQL = `
 		(
 		  EXISTS (
-		    SELECT 1 FROM dependencies cd JOIN issues child ON child.id = cd.issue_id
+		    SELECT 1 FROM dependencies cd JOIN (SELECT id, status FROM issues) child ON child.id = cd.issue_id
 		    WHERE cd.type = 'parent-child'
 		      AND ((d.depends_on_issue_id IS NOT NULL AND cd.depends_on_issue_id = d.depends_on_issue_id)
 		        OR (d.depends_on_wisp_id IS NOT NULL AND cd.depends_on_wisp_id = d.depends_on_wisp_id))
 		      AND child.status <> 'closed' AND child.status <> 'pinned'
 		  )
 		  OR EXISTS (
-		    SELECT 1 FROM wisp_dependencies cd JOIN wisps child ON child.id = cd.issue_id
+		    SELECT 1 FROM wisp_dependencies cd JOIN (SELECT id, status FROM wisps) child ON child.id = cd.issue_id
 		    WHERE cd.type = 'parent-child'
 		      AND ((d.depends_on_issue_id IS NOT NULL AND cd.depends_on_issue_id = d.depends_on_issue_id)
 		        OR (d.depends_on_wisp_id IS NOT NULL AND cd.depends_on_wisp_id = d.depends_on_wisp_id))
@@ -29,14 +33,14 @@ const waitsForGateBlockedSQL = `
 		  JSON_UNQUOTE(JSON_EXTRACT(d.metadata, '$.gate')) = 'any-children'
 		  AND (
 		    EXISTS (
-		      SELECT 1 FROM dependencies cd JOIN issues child ON child.id = cd.issue_id
+		      SELECT 1 FROM dependencies cd JOIN (SELECT id, status FROM issues) child ON child.id = cd.issue_id
 		      WHERE cd.type = 'parent-child'
 		        AND ((d.depends_on_issue_id IS NOT NULL AND cd.depends_on_issue_id = d.depends_on_issue_id)
 		          OR (d.depends_on_wisp_id IS NOT NULL AND cd.depends_on_wisp_id = d.depends_on_wisp_id))
 		        AND child.status = 'closed'
 		    )
 		    OR EXISTS (
-		      SELECT 1 FROM wisp_dependencies cd JOIN wisps child ON child.id = cd.issue_id
+		      SELECT 1 FROM wisp_dependencies cd JOIN (SELECT id, status FROM wisps) child ON child.id = cd.issue_id
 		      WHERE cd.type = 'parent-child'
 		        AND ((d.depends_on_issue_id IS NOT NULL AND cd.depends_on_issue_id = d.depends_on_issue_id)
 		          OR (d.depends_on_wisp_id IS NOT NULL AND cd.depends_on_wisp_id = d.depends_on_wisp_id))
@@ -129,7 +133,7 @@ func markBlockedTemplateForIssues() string {
 		  AND (
 		    EXISTS (
 		      SELECT 1 FROM dependencies d
-		      JOIN issues t ON t.id = d.depends_on_issue_id
+		      JOIN (SELECT id, status FROM issues) t ON t.id = d.depends_on_issue_id
 		      WHERE d.issue_id = i.id
 		        AND (d.type = 'blocks' OR d.type = 'conditional-blocks')
 		        AND t.status <> 'closed' AND t.status <> 'pinned'
@@ -143,7 +147,7 @@ func markBlockedTemplateForIssues() string {
 		    )
 		    OR EXISTS (
 		      SELECT 1 FROM dependencies d
-		      JOIN issues p ON p.id = d.depends_on_issue_id
+		      JOIN (SELECT id, is_blocked FROM issues) p ON p.id = d.depends_on_issue_id
 		      WHERE d.issue_id = i.id
 		        AND d.type = 'parent-child'
 		        AND p.is_blocked = 1
@@ -174,7 +178,7 @@ func unmarkBlockedTemplateForIssues() string {
 		    OR (
 		      NOT EXISTS (
 		        SELECT 1 FROM dependencies d
-		        JOIN issues t ON t.id = d.depends_on_issue_id
+		        JOIN (SELECT id, status FROM issues) t ON t.id = d.depends_on_issue_id
 		        WHERE d.issue_id = i.id
 		          AND (d.type = 'blocks' OR d.type = 'conditional-blocks')
 		          AND t.status <> 'closed' AND t.status <> 'pinned'
@@ -188,7 +192,7 @@ func unmarkBlockedTemplateForIssues() string {
 		      )
 		      AND NOT EXISTS (
 		        SELECT 1 FROM dependencies d
-		        JOIN issues p ON p.id = d.depends_on_issue_id
+		        JOIN (SELECT id, is_blocked FROM issues) p ON p.id = d.depends_on_issue_id
 		        WHERE d.issue_id = i.id
 		          AND d.type = 'parent-child'
 		          AND p.is_blocked = 1
@@ -242,7 +246,7 @@ func markBlockedTemplateForWisps() string {
 		    )
 		    OR EXISTS (
 		      SELECT 1 FROM wisp_dependencies d
-		      JOIN wisps t ON t.id = d.depends_on_wisp_id
+		      JOIN (SELECT id, status FROM wisps) t ON t.id = d.depends_on_wisp_id
 		      WHERE d.issue_id = w.id
 		        AND (d.type = 'blocks' OR d.type = 'conditional-blocks')
 		        AND t.status <> 'closed' AND t.status <> 'pinned'
@@ -256,7 +260,7 @@ func markBlockedTemplateForWisps() string {
 		    )
 		    OR EXISTS (
 		      SELECT 1 FROM wisp_dependencies d
-		      JOIN wisps p ON p.id = d.depends_on_wisp_id
+		      JOIN (SELECT id, is_blocked FROM wisps) p ON p.id = d.depends_on_wisp_id
 		      WHERE d.issue_id = w.id
 		        AND d.type = 'parent-child'
 		        AND p.is_blocked = 1
@@ -287,7 +291,7 @@ func unmarkBlockedTemplateForWisps() string {
 		      )
 		      AND NOT EXISTS (
 		        SELECT 1 FROM wisp_dependencies d
-		        JOIN wisps t ON t.id = d.depends_on_wisp_id
+		        JOIN (SELECT id, status FROM wisps) t ON t.id = d.depends_on_wisp_id
 		        WHERE d.issue_id = w.id
 		          AND (d.type = 'blocks' OR d.type = 'conditional-blocks')
 		          AND t.status <> 'closed' AND t.status <> 'pinned'
@@ -301,7 +305,7 @@ func unmarkBlockedTemplateForWisps() string {
 		      )
 		      AND NOT EXISTS (
 		        SELECT 1 FROM wisp_dependencies d
-		        JOIN wisps p ON p.id = d.depends_on_wisp_id
+		        JOIN (SELECT id, is_blocked FROM wisps) p ON p.id = d.depends_on_wisp_id
 		        WHERE d.issue_id = w.id
 		          AND d.type = 'parent-child'
 		          AND p.is_blocked = 1
